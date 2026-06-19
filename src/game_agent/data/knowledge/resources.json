@@ -1,0 +1,6 @@
+[
+  {"name": "水晶矿", "location": "风龙废墟", "minutes": 15, "yield": 32},
+  {"name": "白铁矿", "location": "望风山地", "minutes": 10, "yield": 24},
+  {"name": "铁矿", "location": "明冠峡", "minutes": 8, "yield": 18},
+  {"name": "角色经验材料", "location": "拟造花萼", "minutes": 12, "yield": 6}
+]
