@@ -1,0 +1,15 @@
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+.env
+.venv
+
+.vscode/
+.idea/
+
+*.pyc
+
+logs/
+game_memory/
+player_memory.json
