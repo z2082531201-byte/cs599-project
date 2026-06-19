@@ -2,132 +2,180 @@
 
 ## 1. 系统定位
 
-本项目是面向《王者荣耀》玩家的 AI 游戏助手。目标不是普通聊天机器人，而是具备游戏教练、陪玩建议、英雄推荐、出装铭文建议、任务规划和对局复盘能力的 Agent 系统。
+本项目是面向《王者荣耀》玩家开发的 AI 游戏教练系统，旨在为玩家提供智能问答、英雄推荐、出装建议、阵容分析以及游戏攻略辅助服务。
 
-系统采用“确定性工具 + LLM 解释”的混合架构。涉及事实、英雄名单、位置筛选和推荐约束等高风险内容时，优先由本地知识库和工具服务给出结果；LLM 负责总结、解释和生成自然语言建议。
+系统并非通用聊天机器人，而是围绕《王者荣耀》游戏场景构建的垂直领域 Agent 应用。系统采用“知识库 + 工具服务 + 大语言模型”的混合架构，通过本地知识库提供可靠游戏知识，通过工具模块完成规则约束和推荐筛选，再结合 DeepSeek 大模型生成自然语言解释和个性化建议，从而降低模型幻觉带来的影响，提高回答质量和可信度。
+
+---
 
 ## 2. 分层架构
 
 ```text
 用户层
   ↓
-FastAPI Web UI / API
+Web UI / FastAPI API
   ↓
-Game Companion Agent
+Game Agent
   ↓
 工具服务层
-  ├── 英雄推荐服务 hero_recommend_service.py
-  ├── 攻略检索 guide_search_tool.py
-  ├── 出装推荐 build_recommend_tool.py
-  ├── 任务规划 task_plan_tool.py
-  └── 记忆工具 memory_tool.py
+  ├── hero_recommend_service.py
+  ├── tools.py
+  ├── memory.py
+  ├── local_memory.py
+  └── tracer.py
+  ↓
+模型层
+  ├── llm/client.py
+  └── llm/deepseek_client.py
   ↓
 数据层
-  ├── src/game_agent/knowledge/heroes.json
-  ├── src/game_agent/knowledge/game_guides.json
-  ├── src/game_agent/knowledge/equipments.json
+  ├── knowledge/heroes.json
+  ├── knowledge/game_guides.json
+  ├── knowledge/equipment.json
   ├── player_memory.json
-  ├── ChromaDB
   └── logs/
 ```
+
+系统采用模块化设计，各层职责明确。用户请求首先进入 FastAPI 接口层，然后由 Agent 核心进行处理，必要时调用工具模块和知识库数据，最终通过 DeepSeek 模型生成结构化结果并返回前端展示。
+
+---
 
 ## 3. 核心模块
 
 ### 3.1 前端与接口层
 
-`src/game_agent/api.py` 同时承担 FastAPI API 服务和内嵌 Web UI 页面输出。页面提供对话区、英雄推荐、热门出装、实用工具和快捷问题。
+`src/game_agent/api.py` 是系统接口入口，同时负责 FastAPI 服务和 Web UI 页面交互。
 
-核心接口包括：
+主要功能包括：
 
-- `POST /api/chat`
-- `GET /api/memory`
-- `POST /api/memory`
-- `GET /api/guides`
-- `POST /api/plan`
-- `POST /api/recommend`
+* 接收用户问题
+* 调用 Agent 服务
+* 返回结构化结果
+* 提供 Swagger 接口测试
+* 管理历史会话数据
+
+核心接口：
+
+* `POST /api/chat`
+* `GET /docs`
+* `GET /health`
+
+其中 `/api/chat` 是系统核心业务接口。
+
+---
 
 ### 3.2 Agent 核心
 
-`src/game_agent/game_agent.py` 是当前王者荣耀助手的核心模块，负责：
+`src/game_agent/game_agent.py` 是整个系统的核心模块。
 
-- 固定王者荣耀上下文
-- 识别用户意图
-- 调用本地工具
-- 读取玩家记忆
-- 调用 DeepSeek API，保留 Ollama 本地模型备用
-- 将回答整理为结构化 JSON
+主要职责包括：
 
-结构化返回字段：
+* 构建王者荣耀游戏上下文
+* 用户问题分析
+* 意图识别
+* 用户记忆读取
+* 知识库检索
+* 工具调用
+* DeepSeek API 调用
+* ReAct 推理过程生成
+* 结构化结果输出
+
+系统返回统一 JSON 格式：
 
 ```json
 {
   "summary": "本次回答总结",
-  "key_points": [
-    {
-      "tag": "英雄选择",
-      "content": "优先选择版本强势且适合自己熟练度的英雄"
-    }
-  ],
+  "key_points": [],
   "details": "详细建议内容",
   "follow_up_questions": [],
   "recommendations": {
     "heroes": [],
     "builds": []
-  }
+  },
+  "react_trace": {}
 }
 ```
 
-### 3.3 英雄推荐硬过滤
+其中 react_trace 用于记录系统推理过程，提升回答可解释性。
 
-`src/game_agent/hero_recommend_service.py` 是防止 LLM 幻觉的关键模块，读取 `src/game_agent/knowledge/heroes.json` 中的英雄数据。
+---
 
-推荐流程：
+### 3.3 英雄推荐服务
+
+`src/game_agent/hero_recommend_service.py` 是系统中最重要的规则约束模块。
+
+主要作用：
+
+* 防止模型幻觉
+* 保证推荐英雄真实存在
+* 根据位置和难度筛选英雄
+
+推荐流程如下：
 
 ```text
 用户问题
-  ↓
-infer_role 识别位置
-  ↓
-读取 src/game_agent/knowledge/heroes.json
-  ↓
-按 role / beginner / difficulty / play_style 筛选
-  ↓
-返回英雄列表
-  ↓
-LLM 只解释原因，不决定英雄名
+   ↓
+意图识别
+   ↓
+识别位置（打野/射手/辅助/中路/对抗路）
+   ↓
+读取 heroes.json
+   ↓
+按角色属性筛选
+   ↓
+返回候选英雄
+   ↓
+DeepSeek 生成解释说明
 ```
 
 约束规则：
 
-- 打野问题只返回打野英雄
-- 射手问题只返回射手英雄
-- 辅助问题只返回辅助英雄
-- 中路问题只返回中路或法师英雄
-- 对抗路问题只返回对抗路或战士英雄
+* 打野问题仅推荐打野英雄
+* 射手问题仅推荐射手英雄
+* 辅助问题仅推荐辅助英雄
+* 中路问题仅推荐法师英雄
+* 对抗路问题仅推荐战士英雄
 
-### 3.4 LLM 调用
+---
 
-LLM 调用位于 `src/game_agent/llm/`。
+### 3.4 LLM 调用模块
+
+模型调用位于：
+
+```text
+src/game_agent/llm/
+```
+
+包含：
+
+```text
+client.py
+deepseek_client.py
+```
 
 默认配置：
 
 ```env
-LLM_PROVIDER=deepseek
-OLLAMA_BASE_URL=http://localhost:11434/v1
-OLLAMA_MODEL=qwen2.5:3b
-
-DEEPSEEK_API_KEY=your_deepseek_api_key_here
+DEEPSEEK_API_KEY=your_api_key
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-chat
 ```
 
-系统默认使用 DeepSeek OpenAI Compatible API 调用云端模型；如需离线运行，可将 `LLM_PROVIDER` 改为 `ollama` 并启动本地 Ollama 服务。
+系统采用 DeepSeek OpenAI Compatible API 进行调用，实现自然语言生成和游戏决策解释功能。
+
+---
 
 ## 4. 数据模型
 
 ### 4.1 英雄知识库
 
-`src/game_agent/knowledge/heroes.json` 字段：
+英雄知识库存储于：
+
+```text
+src/game_agent/knowledge/heroes.json
+```
+
+主要字段：
 
 ```json
 {
@@ -140,46 +188,95 @@ DEEPSEEK_MODEL=deepseek-chat
 }
 ```
 
-### 4.2 玩家记忆
+用于英雄推荐和阵容分析。
 
-玩家记忆由 `player_memory.json` 和 Chroma 长期记忆共同支持：
+---
 
-- JSON 记忆：保存常用偏好、常玩角色、风格和目标
-- Chroma 记忆：兼容旧版长期语义记忆检索
+### 4.2 游戏知识库
+
+系统维护以下知识文件：
+
+```text
+knowledge/
+├── heroes.json
+├── game_guides.json
+└── equipment.json
+```
+
+分别用于：
+
+* 英雄信息查询
+* 游戏攻略检索
+* 出装推荐生成
+
+---
+
+### 4.3 玩家记忆
+
+玩家长期偏好保存在：
+
+```text
+player_memory.json
+```
+
+主要记录：
+
+* 常用位置
+* 偏好英雄
+* 游戏风格
+* 历史偏好
+
+用于个性化推荐和连续对话支持。
+
+---
 
 ## 5. 可观测性
 
-系统通过 `trace_id` 记录每次请求，日志保存在 `logs/` 中，可追踪：
+系统通过 `trace_id` 对每次请求进行唯一标识。
 
-- 意图识别结果
-- 工具调用情况
-- 记忆读取与写入
-- LLM Provider
-- 响应耗时
+日志信息保存在：
+
+```text
+logs/
+```
+
+记录内容包括：
+
+* 用户请求
+* 意图识别结果
+* 工具调用过程
+* DeepSeek 响应
+* ReAct 推理链
+* 接口执行耗时
+
+通过日志机制可实现问题追踪和性能分析。
+
+---
 
 ## 6. 测试策略
 
-测试位于 `tests/`：
+系统测试位于：
 
-- API 测试：`tests/test_api.py`
-- 工具测试：`tests/test_tools.py`
-- 英雄推荐服务测试：`tests/test_hero_recommend_service.py`
+```text
+tests/
+```
 
-重点测试用例：
+主要包括：
 
-- 打野推荐不能出现非打野英雄
-- LLM 幻觉英雄名会被后端过滤
-- `/api/chat` 必须返回结构化字段
-- 旧接口保持兼容
+* API接口测试
+* Agent功能测试
+* 英雄推荐测试
+* 工具调用测试
+* ReAct输出测试
 
-## 7. GitHub 提交约束
+重点验证内容：
 
-仓库应保留课程要求的标准结构：
+* 英雄推荐结果正确性
+* 知识库检索准确性
+* DeepSeek接口调用成功率
+* ReAct推理链输出完整性
+* /api/chat接口结构化响应正确性
 
-- `docs/`：项目报告和架构文档
-- `src/`：项目源代码
-- `README.md`：项目入口说明
-- `.gitignore`：忽略缓存、日志、环境变量、虚拟环境和构建产物
-- `LICENSE`：Public 仓库必须包含开源协议
+---
 
-不应提交 `.env`、`logs/`、`game_memory/`、`__pycache__/`、`.pytest_cache/`、`.ruff_cache/`、`.venv/` 等本地运行产物。
+
